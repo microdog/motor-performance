@@ -15,23 +15,21 @@
 """Tests for the MongoDB Driver Performance Benchmarking Spec. Python 3.5+."""
 
 import json
-import os
+import sys
 import tarfile
 import tempfile
-import sys
 from time import time, sleep
-from os.path import join, realpath, exists, dirname, isdir
+from urllib import urlretrieve
+from urlparse import urljoin
 
+import os
 from gridfs import GridFS
+from os.path import join, realpath, exists, dirname, isdir
 from tornado import gen
 
 from motor import motor_tornado
 from test import tornado_tests, unittest
 from test.test_environment import env
-
-from urllib.parse import urljoin
-from urllib.request import urlretrieve
-
 
 TEST_PATH = join(
     dirname(realpath(__file__)),
@@ -55,12 +53,12 @@ if os.environ.get('FAST_PERF_TESTS'):
 
 def download_test_data():
     if not isdir(TEST_PATH):
-        raise Exception("No directory '%s'" % (TEST_PATH, ))
+        raise Exception("No directory '%s'" % (TEST_PATH,))
 
     for name in "single_and_multi_document", "parallel":
         target_dir = join(TEST_PATH, name)
         if not exists(target_dir):
-            print('Downloading %s.tgz' % (name, ))
+            print('Downloading %s.tgz' % (name,))
             file_path = join(TEST_PATH, name + ".tgz")
             urlretrieve(urljoin(BASE, name + ".tgz"), file_path)
 
@@ -83,7 +81,10 @@ class Timer(object):
 
 class _PerformanceTest(tornado_tests.MotorTest):
     def setUp(self):
-        super().setUp()
+        if self.__class__ is _PerformanceTest:
+            raise unittest.SkipTest()
+
+        super(_PerformanceTest, self).setUp()
         download_test_data()
         env.sync_cx.drop_database('perftest')
 
@@ -94,8 +95,9 @@ class _PerformanceTest(tornado_tests.MotorTest):
     def before(self):
         pass
 
-    async def do_task(self):
-        raise NotImplementedError
+    @gen.coroutine
+    def do_task(self):
+        raise NotImplementedError()
 
     def percentile(self, percentile):
         if hasattr(self, 'results'):
@@ -123,16 +125,17 @@ class _PerformanceTest(tornado_tests.MotorTest):
         # Finish writing test line.
         sys.stdout.write("{:>5.3f}\n".format(self.percentile(50)))
         env.sync_cx.drop_database('perftest')
-        super().tearDown()
+        super(_PerformanceTest, self).tearDown()
 
 
 # SINGLE-DOC BENCHMARKS
 class TestRunCommand(_PerformanceTest):
-    async def do_task(self):
+    @gen.coroutine
+    def do_task(self):
         isMaster = {'isMaster': True}
         admin = self.cx.admin
         for _ in range(NUM_DOCS):
-            await admin.command(isMaster)
+            yield admin.command(isMaster)
 
 
 def load_doc(dataset):
@@ -143,15 +146,16 @@ def load_doc(dataset):
 
 class TestFindOneByID(_PerformanceTest):
     def setUp(self):
-        super().setUp()
+        super(TestFindOneByID, self).setUp()
         doc = load_doc('tweet.json')
         documents = [doc.copy() for _ in range(NUM_DOCS)]
         self.inserted_ids = env.sync_cx.perftest.corpus.insert(documents)
 
-    async def do_task(self):
+    @gen.coroutine
+    def do_task(self):
         corpus = self.cx.perftest.corpus
         for i in self.inserted_ids:
-            await corpus.find_one({'_id': i})
+            yield corpus.find_one({'_id': i})
 
 
 class TestSmallDocInsertOne(_PerformanceTest):
@@ -163,10 +167,11 @@ class TestSmallDocInsertOne(_PerformanceTest):
         doc = load_doc('small_doc.json')
         self.documents = [doc.copy() for _ in range(NUM_DOCS)]
 
-    async def do_task(self):
+    @gen.coroutine
+    def do_task(self):
         corpus = self.cx.perftest.corpus
         for doc in self.documents:
-            await corpus.insert(doc)
+            yield corpus.insert(doc)
 
 
 class TestLargeDocInsertOne(_PerformanceTest):
@@ -176,24 +181,26 @@ class TestLargeDocInsertOne(_PerformanceTest):
         doc = load_doc('large_doc.json')
         self.documents = [doc.copy() for _ in range(10)]
 
-    async def do_task(self):
+    @gen.coroutine
+    def do_task(self):
         corpus = self.cx.perftest.corpus
         for doc in self.documents:
-            await corpus.insert(doc)
+            yield corpus.insert(doc)
 
 
 # MULTI-DOC BENCHMARKS
 class TestFindManyAndEmptyCursor(_PerformanceTest):
     def setUp(self):
-        super().setUp()
+        super(TestFindManyAndEmptyCursor, self).setUp()
         doc = load_doc('tweet.json')
         for _ in range(10):
             env.sync_cx.perftest.command('insert', 'corpus',
                                          documents=[doc] * 1000)
 
-    async def do_task(self):
+    @gen.coroutine
+    def do_task(self):
         corpus = self.cx.perftest.corpus
-        for _ in await corpus.find().to_list(length=None):
+        for _ in (yield corpus.find().to_list(length=None)):
             pass
 
 
@@ -204,14 +211,15 @@ class TestSmallDocBulkInsert(_PerformanceTest):
         doc = load_doc('small_doc.json')
         self.documents = [doc.copy() for _ in range(NUM_DOCS)]
 
-    async def do_task(self):
+    @gen.coroutine
+    def do_task(self):
         corpus = self.cx.perftest.corpus
-        await corpus.insert(self.documents)
+        yield corpus.insert(self.documents)
 
 
 class TestLargeDocBulkInsert(_PerformanceTest):
     def setUp(self):
-        super().setUp()
+        super(TestLargeDocBulkInsert, self).setUp()
         doc = load_doc('large_doc.json')
         self.documents = [doc.copy() for _ in range(10)]
 
@@ -219,9 +227,10 @@ class TestLargeDocBulkInsert(_PerformanceTest):
         env.sync_cx.perftest.drop_collection('corpus')
         env.sync_cx.perftest.command({'create': 'corpus'})
 
-    async def do_task(self):
+    @gen.coroutine
+    def do_task(self):
         corpus = self.cx.perftest.corpus
-        await corpus.insert(self.documents)
+        yield corpus.insert(self.documents)
 
 
 gridfs_path = join(TEST_PATH, 'single_and_multi_document', 'gridfs_large.bin')
@@ -229,7 +238,7 @@ gridfs_path = join(TEST_PATH, 'single_and_multi_document', 'gridfs_large.bin')
 
 class TestGridFsUpload(_PerformanceTest):
     def setUp(self):
-        super().setUp()
+        super(TestGridFsUpload, self).setUp()
 
         with open(gridfs_path, 'rb') as data:
             self.document = data.read()
@@ -243,34 +252,38 @@ class TestGridFsUpload(_PerformanceTest):
         db = self.motor_client(ssl=self.ssl).perftest
         self.gridfs = motor_tornado.MotorGridFS(db)
 
-    async def do_task(self):
-        await self.gridfs.put(self.document, filename='gridfstest')
+    @gen.coroutine
+    def do_task(self):
+        yield self.gridfs.put(self.document, filename='gridfstest')
 
 
 class TestGridFsDownload(_PerformanceTest):
     def setUp(self):
-        super().setUp()
+        super(TestGridFsDownload, self).setUp()
         self.gridfs = motor_tornado.MotorGridFS(self.cx.perftest)
 
         with open(gridfs_path, 'rb') as data:
             self.uploaded_id = GridFS(env.sync_cx.perftest).put(data)
 
-    async def do_task(self):
-        out = await self.gridfs.get(self.uploaded_id)
-        await out.read()
+    @gen.coroutine
+    def do_task(self):
+        out = yield self.gridfs.get(self.uploaded_id)
+        yield out.read()
 
 
 # PARALLEL BENCHMARKS
-async def insert_json_file(collection, filename):
+@gen.coroutine
+def insert_json_file(collection, filename):
     documents = []
     with open(filename, 'r') as data:
         for line in data:
             documents.append(json.loads(line.strip()))
 
-    await collection.insert(documents)
+    yield collection.insert(documents)
 
 
-async def insert_json_file_with_file_id(collection, filename):
+@gen.coroutine
+def insert_json_file_with_file_id(collection, filename):
     documents = []
     with open(filename, 'r') as data:
         for line in data:
@@ -278,7 +291,7 @@ async def insert_json_file_with_file_id(collection, filename):
             doc['file'] = filename
             documents.append(doc)
 
-    collection.insert(documents)
+    yield collection.insert(documents)
 
 
 def chunks(l, n):
@@ -286,33 +299,37 @@ def chunks(l, n):
         yield l[i:i + n]
 
 
-async def insert_json_files(collection, files):
+@gen.coroutine
+def insert_json_files(collection, files):
     # A few files at a time to avoid OOM.
     for chunk in chunks(files, 20):
-        await gen.multi(insert_json_file(collection, f) for f in chunk)
+        yield gen.multi(insert_json_file(collection, f) for f in chunk)
 
 
-async def read_json_file(collection, filename):
-    files = await collection.find({'file': filename}).to_list(length=None)
+@gen.coroutine
+def read_json_file(collection, filename):
+    files = yield collection.find({'file': filename}).to_list(length=None)
     with tempfile.TemporaryFile() as tmp:
         for doc in files:
             tmp.write(str(doc) + '\n')
 
 
-async def insert_gridfs_file(motor_gridfs, filename):
+@gen.coroutine
+def insert_gridfs_file(motor_gridfs, filename):
     with open(filename, 'rb') as gfile:
-        await motor_gridfs.put(gfile, filename=filename)
+        yield motor_gridfs.put(gfile, filename=filename)
 
 
-async def read_gridfs_file(motor_gridfs, filename):
+@gen.coroutine
+def read_gridfs_file(motor_gridfs, filename):
     with tempfile.TemporaryFile() as tmp:
-        out = await motor_gridfs.get_last_version(filename)
-        tmp.write(await out.read())
+        out = yield motor_gridfs.get_last_version(filename)
+        tmp.write((yield out.read()))
 
 
 class TestJsonMultiImport(_PerformanceTest):
     def setUp(self):
-        super().setUp()
+        super(TestJsonMultiImport, self).setUp()
         ldjson_path = join(TEST_PATH, 'parallel', 'ldjson_multi')
         self.files = [join(ldjson_path, s) for s in os.listdir(ldjson_path)]
         if fast_perf_tests:
@@ -324,13 +341,14 @@ class TestJsonMultiImport(_PerformanceTest):
         env.sync_cx.perftest.drop_collection('corpus')
         env.sync_cx.perftest.command({'create': 'corpus'})
 
-    async def do_task(self):
-        await insert_json_files(self.corpus, self.files)
+    @gen.coroutine
+    def do_task(self):
+        yield insert_json_files(self.corpus, self.files)
 
 
 class TestJsonMultiExport(_PerformanceTest):
     def setUp(self):
-        super().setUp()
+        super(TestJsonMultiExport, self).setUp()
         env.sync_cx.perfest.corpus.create_index('file')
 
         ldjson_path = join(TEST_PATH, 'parallel', 'ldjson_multi')
@@ -342,15 +360,16 @@ class TestJsonMultiExport(_PerformanceTest):
         self.io_loop.run_sync(lambda: insert_json_files(self.corpus,
                                                         self.files))
 
-    async def do_task(self):
+    @gen.coroutine
+    def do_task(self):
         # A few files at a time to avoid OOM.
         for chunk in chunks(self.files, 20):
-            await gen.multi(read_json_file(self.corpus, f) for f in chunk)
+            yield gen.multi(read_json_file(self.corpus, f) for f in chunk)
 
 
 class TestGridFsMultiFileUpload(_PerformanceTest):
     def setUp(self):
-        super().setUp()
+        super(TestGridFsMultiFileUpload, self).setUp()
         path = join(TEST_PATH, 'parallel', 'gridfs_multi')
         self.files = [join(path, s) for s in os.listdir(path)]
 
@@ -362,13 +381,14 @@ class TestGridFsMultiFileUpload(_PerformanceTest):
         db = self.motor_client(ssl=self.ssl).perftest
         self.gridfs = motor_tornado.MotorGridFS(db)
 
-    async def do_task(self):
-        await gen.multi(insert_gridfs_file(self.gridfs, f) for f in self.files)
+    @gen.coroutine
+    def do_task(self):
+        yield gen.multi(insert_gridfs_file(self.gridfs, f) for f in self.files)
 
 
 class TestGridFsMultiFileDownload(_PerformanceTest):
     def setUp(self):
-        super().setUp()
+        super(TestGridFsMultiFileDownload, self).setUp()
 
         sync_gridfs = GridFS(env.sync_cx.perftest)
         path = join(TEST_PATH, 'parallel', 'gridfs_multi')
@@ -380,11 +400,9 @@ class TestGridFsMultiFileDownload(_PerformanceTest):
 
         self.gridfs = motor_tornado.MotorGridFS(self.cx.perftest)
 
-    async def do_task(self):
-        await gen.multi(read_gridfs_file(self.gridfs, f) for f in self.files)
-
-
-del _PerformanceTest  # Don't run this base class as a test.
+    @gen.coroutine
+    def do_task(self):
+        yield gen.multi(read_gridfs_file(self.gridfs, f) for f in self.files)
 
 
 if __name__ == "__main__":
